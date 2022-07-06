@@ -8,9 +8,13 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Objects;
 
+import com.bigdata.hbase.phoenix.service.AesEncryption;
+import com.bigdata.hbase.phoenix.util.Helper;
 import net.thisptr.jackson.jq.Scope;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.phoenix.compile.KeyPart;
@@ -33,15 +37,17 @@ import javax.crypto.spec.SecretKeySpec;
 
 @BuiltInFunction(name = Encrypt.NAME, args = {
         @Argument(allowedTypes = {PVarchar.class}), // raw data
-        @Argument(allowedTypes = {PVarchar.class}), // key
-        @Argument(allowedTypes = {PVarchar.class}, isConstant = true, defaultValue = "AES/CBC/PKCS5Padding"), // Encryprion algorithm
+        @Argument(allowedTypes = {PVarchar.class}), // id
 })
 // CREATE FUNCTION enc(VARCHAR, VARCHAR, VARCHAR CONSTANT DEFAULTVALUE='AES/CBC/PKCS5Padding') RETURNS VARCHAR AS 'com.bigdata.hbase.phoenix.Encrypt';
 public class Encrypt extends ScalarFunction{
     private static final Logger logger = LoggerFactory.getLogger(Encrypt.class);
 
     public static final String NAME = "ENCRYPT";
-
+    private String identifier;
+    volatile String algorithm = "AES/CBC/PKCS5Padding";
+    private final AesEncryption aesEncryption = new AesEncryption();
+    private final Helper helper = new Helper();
     private String key;
     private String algo;
 
@@ -66,17 +72,10 @@ public class Encrypt extends ScalarFunction{
 
 
     private void init() {
-        final ImmutableBytesWritable key = new ImmutableBytesWritable();
-        if (!getChildren().get(1).evaluate(null, key))
-            throw new RuntimeException("key: the 2nd argument must be a varchar.");
-        this.key = (String) PVarchar.INSTANCE.toObject(key);
-
-        final ImmutableBytesWritable algo = new ImmutableBytesWritable();
-        if (!getChildren().get(2).evaluate(null, algo)) {
-            throw new RuntimeException("algorithm: the 3rd argument must be a constant varchar.");
-        }
-
-            this.algo = (String) PVarchar.INSTANCE.toObject(algo);
+        final ImmutableBytesWritable id = new ImmutableBytesWritable();
+        if (!getChildren().get(1).evaluate(null, id))
+            throw new RuntimeException("identifier: the 2nd argument must be a varchar.");
+        this.identifier = (String) PVarchar.INSTANCE.toObject(id);
 
     }
 
@@ -86,34 +85,18 @@ public class Encrypt extends ScalarFunction{
         if (!inArg.evaluate(tuple, ptr)) {
             return false;
         }
+        logger.info("Received: id: {} colName: {}",identifier,(String) PVarchar.INSTANCE.toObject(ptr));
+        String encKey = helper.getKeyFromCache("hbase",identifier);
 
-        try {
-            final SecretKeySpec secretKeySpec = new SecretKeySpec(Base64.getDecoder().decode(key), "AES");
-            Cipher cipher = null;
-            try {
-                cipher = Cipher.getInstance(algo);
-            } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
-                logger.error(e.toString());
-            }
-            try {
-                cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec, new IvParameterSpec(new byte[16]));
-            } catch (InvalidKeyException | InvalidAlgorithmParameterException e) {
-                logger.error(e.toString());
-            }
-            byte[] cipherText = new byte[0];
-            try {
-                cipherText = cipher.doFinal(ptr.copyBytes());
-            } catch (IllegalBlockSizeException | BadPaddingException e) {
-                logger.error(e.toString());
-            }
-
-            byte[] encrypted = Base64.getEncoder().encode(cipherText);
-            ptr.set(encrypted);
-            return true;
-        } catch (Exception e) {
-            logger.error(e.toString());
-            throw new RuntimeException(e);
+        if (Objects.equals(encKey, "Invalid") || Objects.equals(encKey, "unauthorized")){
+            ptr.set(encKey.getBytes());
+            return  true;
         }
+
+        String dec = aesEncryption.encrypt(this.algorithm, (String) PVarchar.INSTANCE.toObject(ptr),encKey);
+
+        ptr.set(dec.getBytes());
+        return true;
     }
 
     @Override

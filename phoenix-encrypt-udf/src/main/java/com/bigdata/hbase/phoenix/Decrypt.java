@@ -11,9 +11,14 @@ import java.sql.Types;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Objects;
 
+import com.bigdata.hbase.phoenix.service.AesEncryption;
+import com.bigdata.hbase.phoenix.util.Helper;
 import net.thisptr.jackson.jq.Scope;
+import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.security.User;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.parse.FunctionParseNode.Argument;
 import org.apache.phoenix.parse.FunctionParseNode.BuiltInFunction;
@@ -23,30 +28,31 @@ import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.types.PVarchar;
 import org.apache.phoenix.expression.function.*;
 import org.apache.phoenix.util.StringUtil;
+import org.eclipse.jetty.server.session.Session;
+import org.eclipse.jetty.server.session.SessionData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.NoSuchPaddingException;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
+
 
 @BuiltInFunction(name = Encrypt.NAME, args = {
         @Argument(allowedTypes = {PVarchar.class}), // raw data
-        @Argument(allowedTypes = {PVarchar.class}), // key
-        @Argument(allowedTypes = {PVarchar.class}, isConstant = true, defaultValue = "AES/CBC/PKCS5Padding"), // Encryprion algorithm
+        @Argument(allowedTypes = {PVarchar.class}),// identifier
+
 })
 
 // CREATE FUNCTION decrypt(VARCHAR, VARCHAR, VARCHAR CONSTANT DEFAULTVALUE='AES/CBC/PKCS5Padding') RETURNS VARCHAR AS 'com.bigdata.hbase.phoenix.Decrypt';
-public class Decrypt extends ScalarFunction{
+public class Decrypt extends ScalarFunction {
     private final static Logger logger = LoggerFactory.getLogger(Decrypt.class);
 
     public static final String NAME = "DECRYPT";
 
-    private String key;
-    private String algo;
+    private String identifier;
+    volatile String algorithm = "AES/CBC/PKCS5Padding";
+    private final AesEncryption aesEncryption = new AesEncryption();
+
+
+    private final  Helper helper = new Helper();
 
     static {
         // Force initializing Scope object when JsonQueryFunction is loaded using the Scope classloader. Otherwise,
@@ -60,7 +66,10 @@ public class Decrypt extends ScalarFunction{
         }
     }
 
-    public Decrypt(){}
+
+
+    public Decrypt() {
+    }
 
     public Decrypt(final List<Expression> children) throws SQLException {
         super(children);
@@ -69,17 +78,10 @@ public class Decrypt extends ScalarFunction{
 
 
     private void init() {
-        final ImmutableBytesWritable key = new ImmutableBytesWritable();
-        if (!getChildren().get(1).evaluate(null, key))
+        final ImmutableBytesWritable id = new ImmutableBytesWritable();
+        if (!getChildren().get(1).evaluate(null, id))
             throw new RuntimeException("key: the 2nd argument must be a varchar.");
-        this.key = (String) PVarchar.INSTANCE.toObject(key);
-
-        final ImmutableBytesWritable algo = new ImmutableBytesWritable();
-        if (!getChildren().get(2).evaluate(null, algo)) {
-            throw new RuntimeException("algorithm: the 3rd argument must be a constant varchar.");
-        }
-
-        this.algo = (String) PVarchar.INSTANCE.toObject(algo);
+        this.identifier = (String) PVarchar.INSTANCE.toObject(id);
 
     }
 
@@ -90,30 +92,19 @@ public class Decrypt extends ScalarFunction{
             return false;
         }
 
-        try {SecretKeySpec secretKeySpec = new SecretKeySpec(Base64.getDecoder().decode(key), "AES");
-            Cipher cipher = null;
-            try {
-                cipher = Cipher.getInstance(algo);
-            } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
-                logger.error(e.toString());
-            }
-            try {
-                cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, new IvParameterSpec(new byte[16]));
-            } catch (InvalidKeyException | InvalidAlgorithmParameterException e) {
-                logger.error(e.toString());
-            }
-            byte[] plainText = new byte[0];
-            try {
-                plainText = cipher.doFinal(Base64.getDecoder().decode(ptr.copyBytes()));
-            } catch (IllegalBlockSizeException | BadPaddingException e) {
-                logger.error(e.toString());
-            }
-            ptr.set(plainText);
-            return true;
-        } catch (Exception e) {
-            logger.error(e.toString());
-            throw new RuntimeException(e);
+        String encKey = helper.getKeyFromCache("hbase",identifier);
+
+
+        if (Objects.equals(encKey, "Invalid") || Objects.equals(encKey, "unauthorized")){
+            ptr.set(encKey.getBytes());
+            return  true;
         }
+
+        String plainText = aesEncryption.decrypt(this.algorithm,(String) PVarchar.INSTANCE.toObject(ptr),encKey);
+
+        ptr.set(plainText.getBytes());
+        return true;
+
     }
 
     @Override
