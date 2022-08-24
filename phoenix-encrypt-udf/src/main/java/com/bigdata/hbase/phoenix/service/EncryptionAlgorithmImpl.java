@@ -25,7 +25,9 @@ public class EncryptionAlgorithmImpl implements EncryptionAlgorithm {
     @Override
     public String encrypt(String algorithm, final String plainText, final String key) {
         String result;
-
+    if (plainText == null){
+        return  null;
+    }
         try {
             SecretKeySpec secretKeySpec = new SecretKeySpec(Base64.getDecoder().decode(key), "AES");
 
@@ -62,7 +64,9 @@ public class EncryptionAlgorithmImpl implements EncryptionAlgorithm {
     @Override
     public String decrypt(String algorithm, String cipherText, String key) {
         String result;
-
+        if (cipherText == null){
+            return  null;
+        }
 
         try {
             SecretKeySpec secretKeySpec = new SecretKeySpec(Base64.getDecoder().decode(key), "AES");

@@ -24,6 +24,10 @@ public class EncryptTest {
         final LiteralExpression value = LiteralExpression.newConstant("bar", PVarchar.INSTANCE);
         final LiteralExpression key = LiteralExpression.newConstant("test.hbase.col", PVarchar.INSTANCE);
         final LiteralExpression algo = LiteralExpression.newConstant("AES/CBC/PKCS5Padding", PVarchar.INSTANCE);
+        System.out.println("Start: " +System.currentTimeMillis());
+        String a= String.valueOf(new Encrypt(Arrays.asList(value, key)));
+        System.out.println("Start: " +System.currentTimeMillis());
         assertEquals("tqQpcx7EeQ5B1RkHe9d4dA==", evaluate(new Encrypt(Arrays.asList(value, key))));
+
     }
 }
